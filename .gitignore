@@ -1,0 +1,42 @@
+# 🐍 Python cache and build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# 🧠 Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# 🧱 IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# 🧩 OS files
+.DS_Store
+Thumbs.db
+
+# 🧾 Logs and temporary data
+*.log
+*.tmp
+
+# 🗂️ Node and connection data (auto-generated during runtime)
+src/Nodes/
+
+# 📦 Compiled executables or generated bundles
+*.exe
+*.spec
+
+# 🚫 Miscellaneous
+*.old
+*.orig
