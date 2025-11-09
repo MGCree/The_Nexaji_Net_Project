@@ -143,7 +143,7 @@ class ConnectionRing:
         # Timer for animation
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_wave)
-        self.timer.start(30)  # about 33 FPS (smooth enough)
+        self.timer.start(30)  # about 33 FPS (smooth enough for now)
 
     def _update_wave(self):
         """Increase size, reset when reaching the max."""

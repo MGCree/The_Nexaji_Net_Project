@@ -103,6 +103,7 @@ Modify or use this software in derivative works.
 Claim ownership, authorship, or affiliation with this project.
 
 This restriction will remain in effect until an open-source license (such as MIT or GPLv3) is officially published for this project.
+The license update is likely to happen once the project is in a stable usable state with most or all features implemented and tested.
 
 For further info please contact at: creemeister@icloud.com
 
