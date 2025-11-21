@@ -35,6 +35,7 @@ class Connection:
         self.last_packet_time = None  # When last packet was sent (for delay enforcement)
         self.first_packet_sent = False  # Track if first handshake packet has been sent
         self.first_packet_complete = False  # Track if first handshake packet has completed
+        self.services_shared = False  # Track if services have been shared when connection became active
     
     def update(self):
         """Update connection state and animations"""
@@ -81,12 +82,18 @@ class Connection:
                 elapsed = QDateTime.currentMSecsSinceEpoch() - self.establishment_time
                 if elapsed >= 5000:  # 5 seconds
                     self.state = Connection.ACTIVE
+                    # When connection becomes active, check and share services (only once)
+                    if not self.services_shared:
+                        self._check_and_share_services()
+                        self.services_shared = True
             
             # Update packets during established state
             packets_to_remove = []
             for packet in self.packets:
                 if packet.update():
                     packets_to_remove.append(packet)
+                    # Handle packet arrival
+                    self._handle_packet_arrival(packet)
             for packet in packets_to_remove:
                 if packet in self.packets:
                     self.packets.remove(packet)
@@ -97,9 +104,41 @@ class Connection:
             for packet in self.packets:
                 if packet.update():
                     packets_to_remove.append(packet)
+                    # Handle packet arrival
+                    self._handle_packet_arrival(packet)
             for packet in packets_to_remove:
                 if packet in self.packets:
                     self.packets.remove(packet)
+    
+    def _check_and_share_services(self):
+        """Check if nodes need to share services when connection becomes active"""
+        if not self.node_a or not self.node_b:
+            return
+        
+        # Check if nodes have empty services
+        node_a_empty = hasattr(self.node_a, 'has_empty_services') and self.node_a.has_empty_services()
+        node_b_empty = hasattr(self.node_b, 'has_empty_services') and self.node_b.has_empty_services()
+        
+        # If one has services and the other doesn't, share them
+        if node_a_empty and not node_b_empty:
+            # Node B has services, share with Node A
+            if hasattr(self.node_b, 'share_services_with_node'):
+                self.node_b.share_services_with_node(self.node_a)
+        elif node_b_empty and not node_a_empty:
+            # Node A has services, share with Node B
+            if hasattr(self.node_a, 'share_services_with_node'):
+                self.node_a.share_services_with_node(self.node_b)
+    
+    def _handle_packet_arrival(self, packet):
+        """Handle when a packet reaches its destination"""
+        if hasattr(packet, 'target_node') and hasattr(packet, 'source_node_obj'):
+            target_node = packet.target_node
+            source_node = packet.source_node_obj
+            
+            # Handle service discovery packets
+            if packet.value == "SERVICE" and hasattr(packet, 'packet_data'):
+                if hasattr(target_node, 'receive_service_packet'):
+                    target_node.receive_service_packet(packet.packet_data, source_node, self.delay)
     
     def _start_handshake(self):
         """Start the handshake process by sending first packet from receiving node to sending node"""
@@ -237,7 +276,7 @@ class Connection:
             # Wired data is sent as a physical connection
             target_node.receive_data(data)
     
-    def send_packet(self, source_node, destination_id, value=""):
+    def send_packet(self, source_node, destination_id, value="", packet_data=None):
         """Send a packet through this connection, respecting delay"""
         # Allow packets during handshake and active states
         if self.state not in [Connection.HANDSHAKING, Connection.ACTIVE]:
@@ -272,10 +311,18 @@ class Connection:
             packet_color = QColor(255, 100, 100)  # Red for SYN
         elif value == "ACK":
             packet_color = QColor(100, 100, 255)  # Blue for ACK
+        elif value == "SERVICE":
+            packet_color = QColor(255, 165, 0)  # Orange for service discovery
         else:
             packet_color = QColor(100, 200, 100)  # Green for data packets
         
         # Create and send packet
-        packet = Packet(source_node, destination_id, value, packet_color)
+        packet = Packet(source_node, destination_id, value, packet_color, packet_data)
         self.packets.append(packet)
+        
+        # Store connection reference for when packet arrives
+        packet.connection = self
+        packet.target_node = target_node
+        packet.source_node_obj = source_node
+        
         return True

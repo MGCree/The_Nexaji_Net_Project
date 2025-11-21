@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QFrame, QComboBox
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtCore import Qt
 
@@ -87,6 +87,74 @@ class NodeSidebar(QWidget):
         # Add spacing
         layout.addStretch()
         
+        # Service discovery section (only for special nodes)
+        self.service_separator = QFrame()
+        self.service_separator.setFrameShape(QFrame.HLine)
+        self.service_separator.setFrameShadow(QFrame.Sunken)
+        self.service_separator.setStyleSheet("color: #ccc; margin-top: 10px; margin-bottom: 10px;")
+        layout.addWidget(self.service_separator)
+        
+        self.service_title = QLabel("Service Discovery")
+        self.service_title.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #333;
+                padding: 5px;
+            }
+        """)
+        layout.addWidget(self.service_title)
+        
+        self.service_type_combo = QComboBox()
+        self.service_type_combo.addItems([
+            "Web Server",
+            "Database",
+            "API Server",
+            "File Server",
+            "DNS Server",
+            "Mail Server",
+            "Game Server",
+            "Streaming Server"
+        ])
+        self.service_type_combo.setStyleSheet("""
+            QComboBox {
+                padding: 8px;
+                font-size: 13px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+        """)
+        layout.addWidget(self.service_type_combo)
+        
+        self.announce_service_button = QPushButton("Announce Service")
+        self.announce_service_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                padding: 10px;
+                font-size: 13px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+            }
+        """)
+        self.announce_service_button.clicked.connect(self._on_announce_service)
+        self.announce_service_button.setEnabled(False)
+        layout.addWidget(self.announce_service_button)
+        
+        # Hide service section by default (only shown for special nodes)
+        self.service_separator.setVisible(False)
+        self.service_title.setVisible(False)
+        self.service_type_combo.setVisible(False)
+        self.announce_service_button.setVisible(False)
+        
         # Buttons
         self.send_signal_button = QPushButton("Send Connection Signal")
         self.send_signal_button.setStyleSheet("""
@@ -162,6 +230,14 @@ class NodeSidebar(QWidget):
             # Update status
             self._update_status(node, canvas_ref)
             
+            # Show/hide service discovery section based on node type
+            is_special = node.node_type == "special"
+            self.service_type_combo.setVisible(is_special)
+            self.announce_service_button.setVisible(is_special)
+            self.announce_service_button.setEnabled(is_special)
+            self.service_title.setVisible(is_special)
+            self.service_separator.setVisible(is_special)
+            
             self.send_signal_button.setEnabled(True)
             self.show()
         else:
@@ -223,6 +299,12 @@ class NodeSidebar(QWidget):
         """Handle send signal button click"""
         if self.selected_node and self.canvas_ref:
             self.selected_node.send_signal(self.canvas_ref.signal_range_pixels)
+    
+    def _on_announce_service(self):
+        """Handle announce service button click"""
+        if self.selected_node and self.canvas_ref:
+            service_type = self.service_type_combo.currentText()
+            self.selected_node.send_service_discovery(service_type)
     
     def _on_close(self):
         """Close the sidebar and deselect node"""

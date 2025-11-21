@@ -118,7 +118,7 @@ class SimulationCanvas(QWidget):
             self.sidebar.update_status()
         
         if needs_update:
-        self.update()
+            self.update()
     
     def start_positioning(self, node_type, callback, cancel_callback=None):
         # Start positioning mode with a preview node

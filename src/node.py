@@ -21,6 +21,9 @@ class Node:
 
         # Creates folder and JSON of the specific node
         self._setup_storage()
+        
+        # Load discovered services
+        self._load_services_from_json()
 
     # In a real application of this this function would not be needed
     def _setup_storage(self):
@@ -28,9 +31,14 @@ class Node:
         node_dir = os.path.join(base_dir, self.id or "Unnamed")
         os.makedirs(node_dir, exist_ok=True)
         self.file_path = os.path.join(node_dir, "data.json")
+        self.services_file_path = os.path.join(node_dir, "services.json")  # Second JSON file for services
 
         if not os.path.exists(self.file_path):
             self._save_to_json()
+        
+        # Initialize services file if it doesn't exist
+        if not os.path.exists(self.services_file_path):
+            self._save_services_to_json()
 
     def _save_to_json(self):
         data = {
@@ -43,6 +51,92 @@ class Node:
         }
         with open(self.file_path, "w") as f:
             json.dump(data, f, indent=4)
+    
+    def _save_services_to_json(self):
+        """Save discovered services to the second JSON file"""
+        if not hasattr(self, 'discovered_services'):
+            self.discovered_services = []
+        
+        with open(self.services_file_path, "w") as f:
+            json.dump(self.discovered_services, f, indent=4)
+    
+    def _load_services_from_json(self):
+        """Load discovered services from the second JSON file"""
+        if os.path.exists(self.services_file_path):
+            try:
+                with open(self.services_file_path, "r") as f:
+                    content = f.read().strip()
+                    if not content or content == "[]":
+                        self.discovered_services = []
+                    else:
+                        data = json.loads(content)
+                        self.discovered_services = data if isinstance(data, list) else []
+            except (json.JSONDecodeError, ValueError):
+                self.discovered_services = []
+        else:
+            self.discovered_services = []
+    
+    def has_empty_services(self):
+        """Check if the services.json file is empty or has no services"""
+        if not hasattr(self, 'discovered_services'):
+            self._load_services_from_json()
+        return len(self.discovered_services) == 0
+    
+    def share_services_with_node(self, other_node):
+        """
+        Share all discovered services with another node.
+        Sends each service as a separate packet with path starting from this node.
+        Only sends services that the other node doesn't already have.
+        """
+        if not hasattr(self, 'discovered_services'):
+            self._load_services_from_json()
+        
+        if len(self.discovered_services) == 0:
+            return False
+        
+        if not self.canvas_ref or not hasattr(self.canvas_ref, 'connections'):
+            return False
+        
+        # Find connection to the other node
+        connection = None
+        for conn in self.canvas_ref.connections:
+            if (conn.node_a == self and conn.node_b == other_node) or \
+               (conn.node_b == self and conn.node_a == other_node):
+                connection = conn
+                break
+        
+        if not connection or connection.state != "active":
+            return False  # No active connection
+        
+        # Load other node's services to check what they already have
+        if not hasattr(other_node, 'discovered_services'):
+            other_node._load_services_from_json()
+        
+        other_services = {s.get("service_id") for s in other_node.discovered_services}
+        
+        # Send each service as a separate packet, but only if they don't already have it
+        sent_count = 0
+        for service in self.discovered_services:
+            service_id = service.get("service_id")
+            
+            # Skip if the other node already has this service
+            if service_id in other_services:
+                continue
+            
+            # Create a copy of the service data with path starting from this node
+            # The receiving node will add itself to the path
+            service_data = {
+                "service_id": service_id,
+                "service_url": service.get("service_url", ""),
+                "service_type": service.get("service_type"),
+                "path": [self.id],  # Path starts from this node
+                "total_delay": 0  # Will be updated when received
+            }
+            
+            if self.send_packet(other_node.id, "SERVICE", service_data):
+                sent_count += 1
+        
+        return sent_count > 0
 
     def add_connection(self, other_node, delay):
         # Add a connection between this node and another, with delay.
@@ -75,11 +169,12 @@ class Node:
         # Unfinished function for creating a ConnectionRing at the node
         print("call")
     
-    def send_packet(self, destination_id, value=""):
+    def send_packet(self, destination_id, value="", packet_data=None):
         """
         Send a packet to another node through a connection.
         Finds the connection to the destination node and sends the packet.
         Returns True if packet was sent, False otherwise.
+        packet_data: Optional dictionary with additional packet information (for service discovery)
         """
         if not self.canvas_ref or not hasattr(self.canvas_ref, 'connections'):
             return False
@@ -118,7 +213,123 @@ class Node:
             return False  # No connection to destination
         
         # Use connection's send_packet method
-        return target_connection.send_packet(self, destination_id, value)
+        return target_connection.send_packet(self, destination_id, value, packet_data)
+    
+    def send_service_discovery(self, service_type):
+        """
+        Send service discovery packets to all connected nodes.
+        Only special nodes can send service discovery.
+        """
+        if self.node_type != "special":
+            return False
+        
+        if not self.canvas_ref or not hasattr(self.canvas_ref, 'connections'):
+            return False
+        
+        # Create service discovery packet data
+        service_data = {
+            "service_id": self.id,
+            "service_url": self.url or "",
+            "service_type": service_type,
+            "path": [self.id],  # Start path with this node's ID
+            "total_delay": 0  # Start with 0 delay
+        }
+        
+        # Send to all connected nodes
+        sent_count = 0
+        for conn in self.canvas_ref.connections:
+            if conn.state == "active":  # Only send through active connections
+                other_node = None
+                if conn.node_a == self:
+                    other_node = conn.node_b
+                elif conn.node_b == self:
+                    other_node = conn.node_a
+                
+                if other_node:
+                    if self.send_packet(other_node.id, "SERVICE", service_data):
+                        sent_count += 1
+        
+        return sent_count > 0
+    
+    def receive_service_packet(self, service_data, sender_node, connection_delay):
+        """
+        Handle receiving a service discovery packet.
+        Store the service info and forward to other connected nodes.
+        """
+        if not hasattr(self, 'discovered_services'):
+            self.discovered_services = []
+        
+        # Update path and delay
+        service_data = service_data.copy()  # Make a copy to avoid modifying original
+        service_data["path"] = service_data.get("path", []) + [self.id]
+        service_data["total_delay"] = service_data.get("total_delay", 0) + connection_delay
+        
+        # Check if we already have this service (same service_id and path length)
+        # If we have a shorter path, update it
+        existing_index = None
+        for i, existing in enumerate(self.discovered_services):
+            if existing.get("service_id") == service_data.get("service_id"):
+                # Keep the one with shorter path or lower delay
+                if len(service_data["path"]) < len(existing.get("path", [])) or \
+                   service_data["total_delay"] < existing.get("total_delay", float('inf')):
+                    existing_index = i
+                else:
+                    # Already have a better path, don't update
+                    return
+                break
+        
+        # Add or update service
+        if existing_index is not None:
+            self.discovered_services[existing_index] = service_data
+        else:
+            self.discovered_services.append(service_data)
+        
+        # Save to JSON
+        self._save_services_to_json()
+        
+        # Forward to all connected nodes except the sender
+        # But only forward to nodes that don't already have this service
+        if not self.canvas_ref or not hasattr(self.canvas_ref, 'connections'):
+            return
+        
+        service_id = service_data.get("service_id")
+        
+        for conn in self.canvas_ref.connections:
+            if conn.state == "active":  # Only forward through active connections
+                other_node = None
+                if conn.node_a == self:
+                    other_node = conn.node_b
+                elif conn.node_b == self:
+                    other_node = conn.node_a
+                
+                if other_node and other_node != sender_node:
+                    # Check if the target node already has this service
+                    # Only forward if they don't have it or if we have a better path
+                    should_forward = True
+                    
+                    if hasattr(other_node, 'discovered_services'):
+                        # Load services if not loaded
+                        if not hasattr(other_node, '_services_loaded'):
+                            other_node._load_services_from_json()
+                            other_node._services_loaded = True
+                        
+                        # Check if target node already has this service
+                        for existing_service in other_node.discovered_services:
+                            if existing_service.get("service_id") == service_id:
+                                # They already have it - check if our path is better
+                                existing_path_len = len(existing_service.get("path", []))
+                                existing_delay = existing_service.get("total_delay", float('inf'))
+                                new_path_len = len(service_data.get("path", []))
+                                new_delay = service_data.get("total_delay", 0)
+                                
+                                # Only forward if we have a better path (shorter or lower delay)
+                                if new_path_len >= existing_path_len and new_delay >= existing_delay:
+                                    should_forward = False
+                                break
+                    
+                    if should_forward:
+                        # Forward the packet
+                        self.send_packet(other_node.id, "SERVICE", service_data)
 
     def send_signal(self, signal_range_pixels=150):
         """

@@ -5,11 +5,12 @@ import math
 class Packet:
     """Represents a data packet traveling between nodes"""
     
-    def __init__(self, source_node, destination_id, value="", color=QColor(255, 100, 100)):
+    def __init__(self, source_node, destination_id, value="", color=QColor(255, 100, 100), packet_data=None):
         self.source_node = source_node
         self.destination_id = destination_id
         self.value = value
         self.color = color
+        self.packet_data = packet_data  # Additional data (for service discovery, etc.)
         self.progress = 0.0  # 0.0 to 1.0, how far along the path
         self.speed = 0.02  # Progress increment per frame
         self.active = True
