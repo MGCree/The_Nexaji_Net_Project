@@ -1,26 +1,54 @@
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from canvas import SimulationCanvas
+from control_bar import ControlBar
+from node_sidebar import NodeSidebar
 import sys
 
 app = QApplication(sys.argv)
 
 window = QWidget()
 window.setWindowTitle("Network Simulation")
-window.resize(800, 600)
+window.resize(1000, 600)
 
-layout = QVBoxLayout()
+# Main vertical layout
+main_layout = QVBoxLayout()
+main_layout.setContentsMargins(0, 0, 0, 0)
+main_layout.setSpacing(0)
+
+# Horizontal layout for canvas and sidebar
+content_layout = QHBoxLayout()
+content_layout.setContentsMargins(0, 0, 0, 0)
+content_layout.setSpacing(0)
+
+# Add canvas
 canvas = SimulationCanvas()
-layout.addWidget(canvas)
-window.setLayout(layout)
+content_layout.addWidget(canvas)
+
+# Add control bar at the top
+control_bar = ControlBar()
+control_bar.set_canvas(canvas)
+main_layout.addWidget(control_bar)
+
+# Add sidebar
+sidebar = NodeSidebar()
+content_layout.addWidget(sidebar)
+
+# Connect canvas and sidebar
+canvas.sidebar = sidebar
+
+main_layout.addLayout(content_layout)
+
+window.setLayout(main_layout)
 
 # Temp code to add nodes while i figure out some things
 canvas.add_node(100, 100, node_type="normal", id="A")
-canvas.add_node(250, 100, node_type="special", id="Server-1")
-canvas.add_node(400, 150, node_type="normal", id="B")
-canvas.add_node(550, 300, node_type="special", id="Gateway")
-canvas.add_node(700, 450, node_type="normal", id="C")
-canvas.add_node(200, 400, node_type="normal", id="D")
-canvas.add_node(350, 350, node_type="special", id="Router-1")
+canvas.add_node(200, 100, node_type="normal", id="Server-1")
+canvas.add_node(200, 150, node_type="normal", id="B")
+canvas.add_node(200, 200, node_type="normal", id="646583")
+canvas.add_node(200, 300, node_type="normal", id="Gateway")
+canvas.add_node(300, 450, node_type="normal", id="C")
+canvas.add_node(300, 400, node_type="normal", id="D")
+canvas.add_node(400, 350, node_type="normal", id="Router-1")
 
 window.show()
 sys.exit(app.exec())
