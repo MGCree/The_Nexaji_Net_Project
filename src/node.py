@@ -33,12 +33,32 @@ class Node:
         self.file_path = os.path.join(node_dir, "data.json")
         self.services_file_path = os.path.join(node_dir, "services.json")  # Second JSON file for services
 
-        if not os.path.exists(self.file_path):
+        # Load existing data if file exists
+        if os.path.exists(self.file_path):
+            self._load_from_json()
+        else:
             self._save_to_json()
         
         # Initialize services file if it doesn't exist
         if not os.path.exists(self.services_file_path):
             self._save_services_to_json()
+    
+    def _load_from_json(self):
+        #Load node data from JSON file
+        try:
+            with open(self.file_path, "r") as f:
+                data = json.load(f)
+                # Update node properties from saved data
+                if "neighbours" in data:
+                    self.neighbours = data["neighbours"]
+                if "url" in data:
+                    self.url = data["url"]
+                if "x" in data:
+                    self.x = data["x"]
+                if "y" in data:
+                    self.y = data["y"]
+        except Exception as e:
+            print(f"Error loading node data from {self.file_path}: {e}")
 
     def _save_to_json(self):
         data = {
@@ -53,7 +73,7 @@ class Node:
             json.dump(data, f, indent=4)
     
     def _save_services_to_json(self):
-        """Save discovered services to the second JSON file"""
+        #Save discovered services to the second JSON file
         if not hasattr(self, 'discovered_services'):
             self.discovered_services = []
         
@@ -61,7 +81,7 @@ class Node:
             json.dump(self.discovered_services, f, indent=4)
     
     def _load_services_from_json(self):
-        """Load discovered services from the second JSON file"""
+        #Load discovered services from the second JSON file
         if os.path.exists(self.services_file_path):
             try:
                 with open(self.services_file_path, "r") as f:
@@ -77,7 +97,7 @@ class Node:
             self.discovered_services = []
     
     def has_empty_services(self):
-        """Check if the services.json file is empty or has no services"""
+        #Check if the services.json file is empty or has no services
         if not hasattr(self, 'discovered_services'):
             self._load_services_from_json()
         return len(self.discovered_services) == 0
@@ -330,6 +350,140 @@ class Node:
                     if should_forward:
                         # Forward the packet
                         self.send_packet(other_node.id, "SERVICE", service_data)
+    
+    def request_service_connection(self, service_data):
+        """
+        Request a connection to a service by following the path from services.json.
+        Sends a CONNECTION_REQUEST packet along the path.
+        The path in services.json goes FROM service TO this node, so we need to reverse it.
+        """
+        if not self.canvas_ref:
+            return False
+        
+        # Path in services.json is from service to this node, reverse it for request
+        original_path = service_data.get("path", [])
+        if len(original_path) == 0:
+            return False
+        
+        # Reverse the path to go from this node to the service
+        path = list(reversed(original_path))
+        
+        # Verify we're at the start of the reversed path
+        if path[0] != self.id:
+            # We're not at the start, find our position
+            try:
+                our_index = path.index(self.id)
+                # Trim path to start from us
+                path = path[our_index:]
+            except ValueError:
+                # We're not in the path, can't route
+                return False
+        
+        # Get the next node in the path (towards the service)
+        if len(path) < 2:
+            # We're the service itself or path is invalid
+            return False
+        
+        next_node_id = path[1]
+        
+        # Create connection request packet with the reversed path
+        request_data = {
+            "service_id": service_data.get("service_id"),
+            "requesting_node_id": self.id,
+            "path": path,  # Path from requesting node to service
+            "request_type": "CONNECTION_REQUEST"
+        }
+        
+        # Send request packet to next node in path
+        result = self.send_packet(next_node_id, "CONNECTION_REQUEST", request_data)
+        if not result:
+            print(f"Failed to send connection request from {self.id} to {next_node_id}. Path: {path}")
+        return result
+    
+    def handle_connection_request(self, request_data, sender_node):
+        """
+        Handle a connection request packet.
+        If we're the service, respond with CONNECTION_RESPONSE.
+        Otherwise, forward along the path.
+        """
+        service_id = request_data.get("service_id")
+        path = request_data.get("path", [])
+        requesting_node_id = request_data.get("requesting_node_id")
+        
+        # Check if we're the target service
+        if self.id == service_id:
+            # We're the service! Send response back
+            response_data = {
+                "service_id": service_id,
+                "requesting_node_id": requesting_node_id,
+                "path": list(reversed(path)),  # Reverse path for response
+                "request_type": "CONNECTION_RESPONSE"
+            }
+            
+            # Send response back along reversed path
+            if len(path) > 1:
+                # Find previous node in path
+                our_index = path.index(self.id)
+                if our_index > 0:
+                    prev_node_id = path[our_index - 1]
+                    return self.send_packet(prev_node_id, "CONNECTION_RESPONSE", response_data)
+            return False
+        else:
+            # Forward along the path
+            try:
+                our_index = path.index(self.id)
+                if our_index + 1 < len(path):
+                    next_node_id = path[our_index + 1]
+                    return self.send_packet(next_node_id, "CONNECTION_REQUEST", request_data)
+            except ValueError:
+                pass
+            return False
+    
+    def handle_connection_response(self, response_data, sender_node):
+        """
+        Handle a connection response packet.
+        If we're the requesting node, the connection is now active.
+        Otherwise, forward back along the path.
+        Path in response goes from service to requesting node.
+        """
+        requesting_node_id = response_data.get("requesting_node_id")
+        path = response_data.get("path", [])
+        
+        # Check if we're the requesting node
+        if self.id == requesting_node_id:
+            # We're the requester! Connection is established and active
+            # Mark all connections along the path as service connections
+            if self.canvas_ref and hasattr(self.canvas_ref, 'connections'):
+                # Mark all connections in the path as service connections
+                # Path goes from service to requester
+                for i in range(len(path) - 1):
+                    current_node_id = path[i]
+                    next_node_id = path[i + 1]
+                    
+                    # Find the connection between these nodes
+                    for conn in self.canvas_ref.connections:
+                        node_a_id = conn.node_a.id if hasattr(conn.node_a, 'id') else None
+                        node_b_id = conn.node_b.id if hasattr(conn.node_b, 'id') else None
+                        
+                        if ((node_a_id == current_node_id and node_b_id == next_node_id) or
+                            (node_a_id == next_node_id and node_b_id == current_node_id)):
+                            # Mark as service connection and reset TTL
+                            conn.is_service_connection = True
+                            from PySide6.QtCore import QDateTime
+                            conn.last_activity_time = QDateTime.currentMSecsSinceEpoch()
+                            break
+            return True
+        else:
+            # Forward back along the path (towards the requesting node)
+            try:
+                our_index = path.index(self.id)
+                if our_index + 1 < len(path):
+                    next_node_id = path[our_index + 1]  # Next node towards requester
+                    return self.send_packet(next_node_id, "CONNECTION_RESPONSE", response_data)
+            except ValueError:
+                # We're not in the path, can't forward
+                pass
+            return False
 
     def send_signal(self, signal_range_pixels=150):
         """
@@ -438,7 +592,9 @@ class NormalNode(Node):
     def __init__(self, x, y, id=None, url=None):
         super().__init__(x, y, id, url)
         self.node_type = "normal"
-        self._save_to_json()
+        # Only save if this is a new node (file didn't exist)
+        if not os.path.exists(self.file_path):
+            self._save_to_json()
 
     def draw(self, painter: QPainter):
         painter.setBrush(QColor(100, 180, 255))
@@ -458,7 +614,9 @@ class SpecialNode(Node):
     def __init__(self, x, y, id=None, url=None):
         super().__init__(x, y, id, url)
         self.node_type = "special"
-        self._save_to_json()
+        # Only save if this is a new node (file didn't exist)
+        if not os.path.exists(self.file_path):
+            self._save_to_json()
 
     def draw(self, painter: QPainter):
         painter.setBrush(QColor(255, 180, 80))

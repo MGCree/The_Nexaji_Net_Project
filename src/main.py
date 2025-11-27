@@ -40,15 +40,8 @@ main_layout.addLayout(content_layout)
 
 window.setLayout(main_layout)
 
-# Temp code to add nodes while i figure out some things
-canvas.add_node(100, 100, node_type="normal", id="A")
-canvas.add_node(200, 100, node_type="normal", id="Server-1")
-canvas.add_node(200, 150, node_type="normal", id="B")
-canvas.add_node(200, 200, node_type="normal", id="646583")
-canvas.add_node(200, 300, node_type="normal", id="Gateway")
-canvas.add_node(300, 450, node_type="normal", id="C")
-canvas.add_node(300, 400, node_type="normal", id="D")
-canvas.add_node(400, 350, node_type="normal", id="Router-1")
+# Load nodes from storage on launch
+canvas.load_nodes_from_storage()
 
 window.show()
 sys.exit(app.exec())

@@ -36,6 +36,9 @@ class Connection:
         self.first_packet_sent = False  # Track if first handshake packet has been sent
         self.first_packet_complete = False  # Track if first handshake packet has completed
         self.services_shared = False  # Track if services have been shared when connection became active
+        self.last_activity_time = None  # Track last packet activity for TTL
+        self.ttl_duration = 120000  # 2 minutes in milliseconds
+        self.is_service_connection = False  # Track if this is a service connection (yellow when active)
     
     def update(self):
         """Update connection state and animations"""
@@ -82,6 +85,7 @@ class Connection:
                 elapsed = QDateTime.currentMSecsSinceEpoch() - self.establishment_time
                 if elapsed >= 5000:  # 5 seconds
                     self.state = Connection.ACTIVE
+                    self.last_activity_time = QDateTime.currentMSecsSinceEpoch()
                     # When connection becomes active, check and share services (only once)
                     if not self.services_shared:
                         self._check_and_share_services()
@@ -106,9 +110,26 @@ class Connection:
                     packets_to_remove.append(packet)
                     # Handle packet arrival
                     self._handle_packet_arrival(packet)
+                    # Reset TTL timer on packet activity
+                    from PySide6.QtCore import QDateTime
+                    self.last_activity_time = QDateTime.currentMSecsSinceEpoch()
             for packet in packets_to_remove:
                 if packet in self.packets:
                     self.packets.remove(packet)
+            
+            # Check TTL - close connection if no activity for 2 minutes
+            if self.last_activity_time:
+                from PySide6.QtCore import QDateTime
+                current_time = QDateTime.currentMSecsSinceEpoch()
+                elapsed = current_time - self.last_activity_time
+                if elapsed >= self.ttl_duration:
+                    # Connection timed out, close it
+                    self.state = Connection.HANDSHAKING  # Reset to handshaking (effectively closed)
+                    self.handshake_complete = False
+                    self.first_packet_sent = False
+                    self.first_packet_complete = False
+                    self.line_progress = 0.0
+                    self.last_activity_time = None
     
     def _check_and_share_services(self):
         """Check if nodes need to share services when connection becomes active"""
@@ -135,10 +156,24 @@ class Connection:
             target_node = packet.target_node
             source_node = packet.source_node_obj
             
+            # Reset TTL timer on any packet activity
+            from PySide6.QtCore import QDateTime
+            self.last_activity_time = QDateTime.currentMSecsSinceEpoch()
+            
             # Handle service discovery packets
             if packet.value == "SERVICE" and hasattr(packet, 'packet_data'):
                 if hasattr(target_node, 'receive_service_packet'):
                     target_node.receive_service_packet(packet.packet_data, source_node, self.delay)
+            
+            # Handle connection request packets
+            elif packet.value == "CONNECTION_REQUEST" and hasattr(packet, 'packet_data'):
+                if hasattr(target_node, 'handle_connection_request'):
+                    target_node.handle_connection_request(packet.packet_data, source_node)
+            
+            # Handle connection response packets
+            elif packet.value == "CONNECTION_RESPONSE" and hasattr(packet, 'packet_data'):
+                if hasattr(target_node, 'handle_connection_response'):
+                    target_node.handle_connection_response(packet.packet_data, source_node)
     
     def _start_handshake(self):
         """Start the handshake process by sending first packet from receiving node to sending node"""
@@ -210,13 +245,16 @@ class Connection:
             painter.setPen(pen)
             painter.drawLine(recv_x, recv_y, send_x, send_y)
         else:  # ACTIVE
-            # Draw black line by default, green only when packets are active
+            # Draw line based on connection type
             if len(self.packets) > 0:
-                # Green when packets are being transmitted
+                # Green when packets are being transmitted (all connections)
                 pen = QPen(QColor(0, 200, 0), 3)
             else:
-                # Black when idle
-                pen = QPen(QColor(0, 0, 0), 3)
+                # Service connections are yellow when idle, regular connections are black
+                if self.is_service_connection:
+                    pen = QPen(QColor(255, 200, 0), 3)  # Yellow for service connections
+                else:
+                    pen = QPen(QColor(0, 0, 0), 3)  # Black for regular connections
             painter.setPen(pen)
             painter.drawLine(recv_x, recv_y, send_x, send_y)
 
@@ -249,11 +287,14 @@ class Connection:
             text_rect = painter.fontMetrics().boundingRect("Connection established")
             painter.drawText(int(text_x - text_rect.width() / 2), int(text_y), "Connection established")
         else:  # ACTIVE
-            # Text color matches line color (green when packets active, black when idle)
+            # Text color matches line color
             if len(self.packets) > 0:
                 painter.setPen(QColor(0, 150, 0))  # Green text when packets active
             else:
-                painter.setPen(QColor(0, 0, 0))  # Black text when idle
+                if self.is_service_connection:
+                    painter.setPen(QColor(200, 150, 0))  # Orange text for service connections when idle
+                else:
+                    painter.setPen(QColor(0, 0, 0))  # Black text for regular connections when idle
             delay_text = f"{self.delay}ms"
             text_rect = painter.fontMetrics().boundingRect(delay_text)
             painter.drawText(int(text_x - text_rect.width() / 2), int(text_y), delay_text)
@@ -279,7 +320,12 @@ class Connection:
     def send_packet(self, source_node, destination_id, value="", packet_data=None):
         """Send a packet through this connection, respecting delay"""
         # Allow packets during handshake and active states
-        if self.state not in [Connection.HANDSHAKING, Connection.ACTIVE]:
+        # Also allow connection request/response packets during established state
+        if self.state not in [Connection.HANDSHAKING, Connection.ESTABLISHED, Connection.ACTIVE]:
+            return False
+        
+        # Connection requests/responses can be sent during established state
+        if self.state == Connection.ESTABLISHED and value not in ["CONNECTION_REQUEST", "CONNECTION_RESPONSE"]:
             return False
         
         # Determine target node
@@ -305,6 +351,8 @@ class Connection:
                     return False  # Must wait for delay
             
             self.last_packet_time = current_time
+            # Reset TTL timer when sending packet
+            self.last_activity_time = current_time
         
         # Determine packet color based on value/type
         if value == "SYN":
@@ -313,6 +361,10 @@ class Connection:
             packet_color = QColor(100, 100, 255)  # Blue for ACK
         elif value == "SERVICE":
             packet_color = QColor(255, 165, 0)  # Orange for service discovery
+        elif value == "CONNECTION_REQUEST":
+            packet_color = QColor(255, 200, 0)  # Yellow for connection request
+        elif value == "CONNECTION_RESPONSE":
+            packet_color = QColor(200, 255, 0)  # Yellow-green for connection response
         else:
             packet_color = QColor(100, 200, 100)  # Green for data packets
         

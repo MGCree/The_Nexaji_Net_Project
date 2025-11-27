@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 from node import NormalNode, SpecialNode
 from connection import Connection
 import math
+import os
+import json
 
 # Important canvas, basically the simulation area
 # The point of this is to simulate the world
@@ -54,8 +56,136 @@ class SimulationCanvas(QWidget):
         self.nodes.append(node)
         self.update()
     
+    def load_nodes_from_storage(self):
+        #Load all nodes from the Nodes folder
+        nodes_dir = os.path.join(os.path.dirname(__file__), "Nodes")
+        if not os.path.exists(nodes_dir):
+            return
+        
+        # Dictionary to store nodes by ID for connection creation
+        nodes_by_id = {}
+        
+        # First pass: create all nodes
+        for node_folder in os.listdir(nodes_dir):
+            node_path = os.path.join(nodes_dir, node_folder)
+            if not os.path.isdir(node_path):
+                continue
+            
+            data_file = os.path.join(node_path, "data.json")
+            if not os.path.exists(data_file):
+                continue
+            
+            try:
+                with open(data_file, "r") as f:
+                    node_data = json.load(f)
+                
+                node_id = node_data.get("id")
+                node_type = node_data.get("type", "normal")
+                x = node_data.get("x", 100)
+                y = node_data.get("y", 100)
+                url = node_data.get("url")
+                
+                if node_id and node_id != "Unnamed":
+                    # Create node
+                    if node_type == "special":
+                        node = SpecialNode(x, y, id=node_id, url=url)
+                    else:
+                        node = NormalNode(x, y, id=node_id, url=url)
+                    
+                    node.canvas_ref = self
+                    self.nodes.append(node)
+                    nodes_by_id[node_id] = node
+            except Exception as e:
+                print(f"Error loading node from {node_folder}: {e}")
+        
+        # Second pass: create connections based on neighbours
+        # Use a set to track created connections to avoid duplicates
+        created_connections = set()
+        
+        for node_folder in os.listdir(nodes_dir):
+            node_path = os.path.join(nodes_dir, node_folder)
+            if not os.path.isdir(node_path):
+                continue
+            
+            data_file = os.path.join(node_path, "data.json")
+            if not os.path.exists(data_file):
+                continue
+            
+            try:
+                with open(data_file, "r") as f:
+                    node_data = json.load(f)
+                
+                node_id = node_data.get("id")
+                if node_id not in nodes_by_id:
+                    continue
+                
+                current_node = nodes_by_id[node_id]
+                neighbours = node_data.get("neighbours", [])
+                
+                # Create connections to neighbours
+                for neighbour_data in neighbours:
+                    neighbour_id = neighbour_data.get("id")
+                    delay = neighbour_data.get("delay", 0)
+                    
+                    if neighbour_id in nodes_by_id:
+                        neighbour_node = nodes_by_id[neighbour_id]
+                        
+                        # Create a unique key for this connection pair (sorted to avoid duplicates)
+                        connection_key = tuple(sorted([node_id, neighbour_id]))
+                        
+                        # Check if we've already created this connection
+                        if connection_key in created_connections:
+                            continue
+                        
+                        # Check if connection already exists in canvas
+                        connection_exists = False
+                        for conn in self.connections:
+                            node_a_id = conn.node_a.id if hasattr(conn.node_a, 'id') else None
+                            node_b_id = conn.node_b.id if hasattr(conn.node_b, 'id') else None
+                            if ((node_a_id == node_id and node_b_id == neighbour_id) or
+                                (node_a_id == neighbour_id and node_b_id == node_id)):
+                                connection_exists = True
+                                break
+                        
+                        if not connection_exists:
+                            # Calculate distance for delay if delay is 0
+                            if delay == 0:
+                                distance = math.sqrt(
+                                    (current_node.x - neighbour_node.x)**2 + 
+                                    (current_node.y - neighbour_node.y)**2
+                                )
+                                delay = max(1, int(distance / 10))
+                            
+                            # Create connection (both nodes will be receiving/sending, use first as receiving)
+                            connection = self.create_connection(
+                                current_node, 
+                                neighbour_node, 
+                                delay,
+                                receiving_node=current_node,
+                                sending_node=neighbour_node
+                            )
+                            
+                            # Mark connection as created
+                            created_connections.add(connection_key)
+                            
+                            # Set connection directly to ACTIVE state (skip handshake for loaded connections)
+                            if connection:
+                                from PySide6.QtCore import QDateTime
+                                connection.state = Connection.ACTIVE
+                                connection.line_progress = 1.0
+                                connection.handshake_complete = True
+                                connection.first_packet_sent = True
+                                connection.first_packet_complete = True
+                                connection.establishment_time = QDateTime.currentMSecsSinceEpoch() - 6000  # Set to 6 seconds ago so it's already active
+                                connection.last_activity_time = QDateTime.currentMSecsSinceEpoch()
+                                connection.services_shared = True  # Mark as shared so it doesn't try to share again
+            except Exception as e:
+                print(f"Error loading connections for {node_folder}: {e}")
+        
+        self.update()
+    
     def create_connection(self, node_a, node_b, delay, receiving_node=None, sending_node=None):
-        """Create a connection between two nodes"""
+        #Create a connection between two nodes
         # Check if connection already exists
         for conn in self.connections:
             if ((conn.node_a == node_a and conn.node_b == node_b) or
@@ -87,7 +217,7 @@ class SimulationCanvas(QWidget):
         return connection
     
     def _update_animations(self):
-        """Update all connection animations and packets"""
+        #Update all connection animations and packets
         needs_update = False
         
         # Check signal rings for node contact
@@ -280,7 +410,7 @@ class SimulationCanvas(QWidget):
         super().mousePressEvent(event)
     
     def _get_node_at_position(self, x, y):
-        """Get the node at the given position, if any"""
+        #Get the node at the given position, if any
         for node in self.nodes:
             distance = math.sqrt((node.x - x)**2 + (node.y - y)**2)
             if distance <= node.size:

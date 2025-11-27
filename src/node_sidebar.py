@@ -155,6 +155,64 @@ class NodeSidebar(QWidget):
         self.service_type_combo.setVisible(False)
         self.announce_service_button.setVisible(False)
         
+        # Connection request section (only for normal nodes)
+        self.connection_separator = QFrame()
+        self.connection_separator.setFrameShape(QFrame.HLine)
+        self.connection_separator.setFrameShadow(QFrame.Sunken)
+        self.connection_separator.setStyleSheet("color: #ccc; margin-top: 10px; margin-bottom: 10px;")
+        layout.addWidget(self.connection_separator)
+        
+        self.connection_title = QLabel("Connect to Service")
+        self.connection_title.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #333;
+                padding: 5px;
+            }
+        """)
+        layout.addWidget(self.connection_title)
+        
+        self.service_selector_combo = QComboBox()
+        self.service_selector_combo.setStyleSheet("""
+            QComboBox {
+                padding: 8px;
+                font-size: 13px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+        """)
+        layout.addWidget(self.service_selector_combo)
+        
+        self.connect_service_button = QPushButton("Connect")
+        self.connect_service_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px;
+                font-size: 13px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #2E7D32;
+            }
+        """)
+        self.connect_service_button.clicked.connect(self._on_connect_service)
+        self.connect_service_button.setEnabled(False)
+        layout.addWidget(self.connect_service_button)
+        
+        # Hide connection section by default (only shown for normal nodes)
+        self.connection_separator.setVisible(False)
+        self.connection_title.setVisible(False)
+        self.service_selector_combo.setVisible(False)
+        self.connect_service_button.setVisible(False)
+        
         # Buttons
         self.send_signal_button = QPushButton("Send Connection Signal")
         self.send_signal_button.setStyleSheet("""
@@ -238,6 +296,17 @@ class NodeSidebar(QWidget):
             self.service_title.setVisible(is_special)
             self.service_separator.setVisible(is_special)
             
+            # Show/hide connection section based on node type (normal nodes)
+            is_normal = node.node_type == "normal"
+            self.connection_separator.setVisible(is_normal)
+            self.connection_title.setVisible(is_normal)
+            self.service_selector_combo.setVisible(is_normal)
+            self.connect_service_button.setVisible(is_normal)
+            
+            # Populate service selector for normal nodes
+            if is_normal:
+                self._populate_service_selector(node)
+            
             self.send_signal_button.setEnabled(True)
             self.show()
         else:
@@ -305,6 +374,33 @@ class NodeSidebar(QWidget):
         if self.selected_node and self.canvas_ref:
             service_type = self.service_type_combo.currentText()
             self.selected_node.send_service_discovery(service_type)
+    
+    def _populate_service_selector(self, node):
+        """Populate the service selector dropdown with available services"""
+        self.service_selector_combo.clear()
+        
+        if not hasattr(node, 'discovered_services'):
+            node._load_services_from_json()
+        
+        if len(node.discovered_services) == 0:
+            self.service_selector_combo.addItem("No services available")
+            self.connect_service_button.setEnabled(False)
+        else:
+            for service in node.discovered_services:
+                service_id = service.get("service_id", "Unknown")
+                service_type = service.get("service_type", "Unknown")
+                display_text = f"{service_id} ({service_type})"
+                self.service_selector_combo.addItem(display_text, service)
+            self.connect_service_button.setEnabled(True)
+    
+    def _on_connect_service(self):
+        """Handle connect to service button click"""
+        if self.selected_node and self.canvas_ref:
+            current_index = self.service_selector_combo.currentIndex()
+            if current_index >= 0:
+                service_data = self.service_selector_combo.itemData(current_index)
+                if service_data:
+                    self.selected_node.request_service_connection(service_data)
     
     def _on_close(self):
         """Close the sidebar and deselect node"""

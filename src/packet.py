@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 import math
 
 class Packet:
-    """Represents a data packet traveling between nodes"""
+    #Represents a data packet traveling between nodes
     
     def __init__(self, source_node, destination_id, value="", color=QColor(255, 100, 100), packet_data=None):
         self.source_node = source_node
@@ -16,7 +16,7 @@ class Packet:
         self.active = True
         
     def update(self):
-        """Update packet position"""
+        #Update packet position
         if self.active:
             self.progress += self.speed
             if self.progress >= 1.0:
@@ -25,7 +25,7 @@ class Packet:
         return False
     
     def draw(self, painter: QPainter, target_x, target_y):
-        """Draw the packet as a capsule shape along the path"""
+        #Draw the packet as a capsule shape along the path
         if not self.active:
             return
         
