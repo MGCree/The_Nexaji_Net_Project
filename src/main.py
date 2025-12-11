@@ -2,23 +2,28 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from canvas import SimulationCanvas
 from control_bar import ControlBar
 from node_sidebar import NodeSidebar
+from packet_sidebar import PacketSidebar
 import sys
 
 app = QApplication(sys.argv)
 
 window = QWidget()
 window.setWindowTitle("Network Simulation")
-window.resize(1000, 600)
+window.resize(1200, 600)
 
 # Main vertical layout
 main_layout = QVBoxLayout()
 main_layout.setContentsMargins(0, 0, 0, 0)
 main_layout.setSpacing(0)
 
-# Horizontal layout for canvas and sidebar
+# Horizontal layout for sidebars and canvas
 content_layout = QHBoxLayout()
 content_layout.setContentsMargins(0, 0, 0, 0)
 content_layout.setSpacing(0)
+
+# Add left sidebar (packet controls)
+left_sidebar = PacketSidebar()
+content_layout.addWidget(left_sidebar)
 
 # Add canvas
 canvas = SimulationCanvas()
@@ -29,12 +34,13 @@ control_bar = ControlBar()
 control_bar.set_canvas(canvas)
 main_layout.addWidget(control_bar)
 
-# Add sidebar
+# Add right sidebar (node info)
 sidebar = NodeSidebar()
 content_layout.addWidget(sidebar)
 
-# Connect canvas and sidebar
+# Connect canvas and sidebars
 canvas.sidebar = sidebar
+canvas.left_sidebar = left_sidebar
 
 main_layout.addLayout(content_layout)
 

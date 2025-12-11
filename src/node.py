@@ -18,6 +18,10 @@ class Node:
         self.neighbours = [] # list of nearby nodes
         self.listening = True  # Node is always listening for signals
         self.canvas_ref = None  # Reference to canvas for signal broadcasting
+        self.enabled = True  # Node is enabled by default (can send/receive packets)
+        self.pending_path_discoveries = {}  # Track pending path discoveries: discovery_id -> {"callback": func, "best_path": path, "best_delay": delay}
+        self.seen_discovery_ids = set()  # Track seen discovery IDs to prevent loops
+        self.discovery_counter = 0  # Counter for unique discovery IDs
 
         # Creates folder and JSON of the specific node
         self._setup_storage()
@@ -57,6 +61,8 @@ class Node:
                     self.x = data["x"]
                 if "y" in data:
                     self.y = data["y"]
+                if "enabled" in data:
+                    self.enabled = data["enabled"]
         except Exception as e:
             print(f"Error loading node data from {self.file_path}: {e}")
 
@@ -68,6 +74,7 @@ class Node:
             "y": self.y,
             "url": self.url,
             "neighbours": self.neighbours,
+            "enabled": self.enabled,
         }
         with open(self.file_path, "w") as f:
             json.dump(data, f, indent=4)
@@ -193,16 +200,18 @@ class Node:
         """
         Send a packet to another node through a connection.
         Finds the connection to the destination node and sends the packet.
+        If no direct connection exists, finds a path and routes through it.
         Returns True if packet was sent, False otherwise.
         packet_data: Optional dictionary with additional packet information (for service discovery)
         """
+        # Check if node is enabled
+        if not self.enabled:
+            return False
+        
         if not self.canvas_ref or not hasattr(self.canvas_ref, 'connections'):
             return False
         
-        # Find connection to destination node
-        """
-            Will add algorithms that actually find paths to location later
-        """
+        # First, try direct connection (fast path)
         target_connection = None
         for conn in self.canvas_ref.connections:
             # Check if this connection involves current node and the destination
@@ -210,30 +219,268 @@ class Node:
             if conn.node_a == self:
                 if hasattr(conn.node_b, 'id') and conn.node_b.id == destination_id:
                     other_node = conn.node_b
-                elif conn.node_b == destination_id:  # In case it's stored as ID
-                    # Need to find the actual node
-                    for node in self.canvas_ref.nodes:
-                        if node.id == destination_id:
-                            other_node = node
-                            break
             elif conn.node_b == self:
                 if hasattr(conn.node_a, 'id') and conn.node_a.id == destination_id:
                     other_node = conn.node_a
-                elif conn.node_a == destination_id:
-                    for node in self.canvas_ref.nodes:
-                        if node.id == destination_id:
-                            other_node = node
-                            break
             
             if other_node:
                 target_connection = conn
                 break
         
-        if not target_connection:
-            return False  # No connection to destination
+        if target_connection:
+            # Direct connection exists, use it
+            result = target_connection.send_packet(self, destination_id, value, packet_data)
+            if not result and value == "CONNECTION_REQUEST" and packet_data:
+                self._send_connection_failure(packet_data, destination_id)
+            return result
         
-        # Use connection's send_packet method
-        return target_connection.send_packet(self, destination_id, value, packet_data)
+        # No direct connection - find a path and route through it
+        path = self._find_path_to_node(destination_id)
+        if not path or len(path) < 2:
+            # No path found
+            if value == "CONNECTION_REQUEST" and packet_data:
+                self._send_connection_failure(packet_data, destination_id)
+            return False
+        
+        # Route packet through the path
+        # Send to first node in path (next hop)
+        next_node_id = path[1]
+        # Add routing information to packet data
+        if packet_data is None:
+            packet_data = {}
+        packet_data = packet_data.copy()
+        packet_data["routing_path"] = path
+        packet_data["final_destination"] = destination_id
+        packet_data["source_node"] = self.id
+        
+        # Send to next hop
+        for conn in self.canvas_ref.connections:
+            other_node = None
+            if conn.node_a == self:
+                if hasattr(conn.node_b, 'id') and conn.node_b.id == next_node_id:
+                    other_node = conn.node_b
+            elif conn.node_b == self:
+                if hasattr(conn.node_a, 'id') and conn.node_a.id == next_node_id:
+                    other_node = conn.node_a
+            
+            if other_node:
+                return conn.send_packet(self, next_node_id, value, packet_data)
+        
+        return False
+    
+    def _find_path_to_node(self, destination_id):
+        """
+        Find a path from this node to the destination using Dijkstra's algorithm.
+        Uses the graph-based pathfinding from algo.py which considers connection delays.
+        Returns a list of node IDs representing the path, or None if no path exists.
+        
+        Time Complexity: O((V + E) log V) where V is vertices, E is edges
+        """
+        if not self.canvas_ref:
+            return None
+        
+        from algo import find_path
+        
+        # Use Dijkstra's algorithm to find shortest path considering delays
+        path, total_delay = find_path(self.canvas_ref, self.id, destination_id, algorithm='dijkstra')
+        
+        return path
+    
+    def _forward_routed_packet(self, packet_data, value):
+        """Forward a routed packet to the next hop in the path"""
+        routing_path = packet_data.get("routing_path", [])
+        final_destination = packet_data.get("final_destination")
+        if not routing_path or not final_destination or len(routing_path) < 2:
+            return False
+        
+        # Find our position in the path
+        try:
+            our_index = routing_path.index(self.id)
+            if our_index + 1 >= len(routing_path):
+                # We're the last node, should have been delivered
+                return False
+            
+            next_node_id = routing_path[our_index + 1]
+            
+            # Forward to next node
+            return self.send_packet(next_node_id, value, packet_data)
+        except ValueError:
+            # We're not in the path
+            return False
+    
+    def _send_connection_failure(self, original_request_data, failed_at_node_id):
+        """Send a connection failure packet back to the requesting node"""
+        requesting_node_id = original_request_data.get("requesting_node_id")
+        if not requesting_node_id:
+            return
+        
+        # IMPORTANT: Only the requesting node should handle failures and initiate path discovery
+        # Intermediate nodes should only forward failure packets back
+        
+        # If we're the requesting node, handle the failure directly
+        if requesting_node_id == self.id:
+            self._handle_connection_failure(original_request_data, failed_at_node_id)
+            return
+        
+        # Otherwise, we're an intermediate node - just forward the failure packet back
+        path = original_request_data.get("path", [])
+        if not path or self.id not in path:
+            return
+        
+        try:
+            our_index = path.index(self.id)
+            if our_index > 0:
+                prev_node_id = path[our_index - 1]
+                failure_data = {
+                    "original_request": original_request_data,
+                    "failed_at_node_id": failed_at_node_id,
+                    "requesting_node_id": requesting_node_id,
+                    "path": path[:our_index + 1]  # Path from requesting node to failure point
+                }
+                # Just forward - don't handle it ourselves
+                self.send_packet(prev_node_id, "CONNECTION_FAILURE", failure_data)
+        except ValueError:
+            pass
+    
+    def _handle_connection_failure(self, original_request_data, failed_at_node_id):
+        """Handle a connection failure at the requesting node"""
+        # Check retry count
+        retry_count = original_request_data.get("retry_count", 0)
+        service_id = original_request_data.get("service_id")
+        
+        if not service_id:
+            print("Connection failure: No service_id in request data")
+            return
+        
+        if retry_count == 0:
+            # First failure - retry once with same path
+            print(f"Connection request failed at {failed_at_node_id}, retrying...")
+            # Create retry data with incremented retry count
+            retry_data = original_request_data.copy()
+            retry_data["retry_count"] = 1
+            # Retry the connection request with same path
+            next_node_id = retry_data.get("path", [])
+            if len(next_node_id) > 1:
+                next_node_id = next_node_id[1]
+                result = self.send_packet(next_node_id, "CONNECTION_REQUEST", retry_data)
+                if not result:
+                    # Retry also failed, trigger pathfinding
+                    self._handle_connection_failure(retry_data, next_node_id)
+        else:
+            # Second failure - use packet-based pathfinding
+            # IMPORTANT: Only the requesting node should reach here
+            requesting_node_id = original_request_data.get("requesting_node_id")
+            if requesting_node_id != self.id:
+                print(f"ERROR: Intermediate node {self.id} tried to initiate path discovery! This should not happen.")
+                return
+            
+            print(f"Connection request failed again at {failed_at_node_id}, initiating path discovery...")
+            if self.canvas_ref:
+                from algo import initiate_path_discovery
+                
+                # Store callback to use the discovered path
+                if not hasattr(self, 'discovery_counter'):
+                    self.discovery_counter = 0
+                self.discovery_counter += 1
+                discovery_id = f"{self.id}_{service_id}_{self.discovery_counter}"
+                
+                def on_path_discovered(path, total_delay):
+                    """Callback when path is discovered"""
+                    if path and len(path) > 1:
+                        print(f"Found new path via discovery: {path} (delay: {total_delay}ms)")
+                        
+                        # Update services.json with the new path
+                        if hasattr(self, 'discovered_services'):
+                            # Find the service entry and update it
+                            service_updated = False
+                            for service in self.discovered_services:
+                                if service.get("service_id") == service_id:
+                                    # Update with new path (reverse it for storage - path goes from service to node)
+                                    service["path"] = list(reversed(path))
+                                    service["total_delay"] = total_delay
+                                    service_updated = True
+                                    print(f"Updated service {service_id} with new path in services.json")
+                                    break
+                            
+                            if not service_updated:
+                                # Service not in discovered_services, add it
+                                # We need to get service info - try to find it from the path
+                                target_node = None
+                                if self.canvas_ref:
+                                    for node in self.canvas_ref.nodes:
+                                        if hasattr(node, 'id') and node.id == service_id:
+                                            target_node = node
+                                            break
+                                
+                                if target_node:
+                                    new_service = {
+                                        "service_id": service_id,
+                                        "service_url": getattr(target_node, 'url', None),
+                                        "service_type": "Unknown",  # We don't know the type from path discovery
+                                        "path": list(reversed(path)),  # Reverse for storage
+                                        "total_delay": total_delay
+                                    }
+                                    self.discovered_services.append(new_service)
+                                    print(f"Added service {service_id} to discovered_services")
+                            
+                            # Save to JSON
+                            self._save_services_to_json()
+                        
+                        # Create new request with new path
+                        new_request_data = {
+                            "service_id": service_id,
+                            "requesting_node_id": self.id,
+                            "path": path,
+                            "request_type": "CONNECTION_REQUEST",
+                            "retry_count": 0  # Reset retry count for new path
+                        }
+                        # Send request to first node in new path
+                        next_node_id = path[1] if len(path) > 1 else None
+                        if next_node_id:
+                            result = self.send_packet(next_node_id, "CONNECTION_REQUEST", new_request_data)
+                            if not result:
+                                print(f"Failed to send connection request on new path to {next_node_id}")
+                            else:
+                                print(f"Retrying connection request with new path: {path}")
+                        else:
+                            print("New path is invalid (no next node)")
+                    else:
+                        print(f"No path found to service {service_id}")
+                
+                # Store callback with initial state
+                self.pending_path_discoveries[discovery_id] = {
+                    "callback": on_path_discovered,
+                    "best_path": None,
+                    "best_delay": float('inf'),
+                    "timeout": None,
+                    "callback_called": False  # Track if we've already called the callback
+                }
+                
+                # Set timeout to use best path found so far (wait longer for responses to traverse network)
+                from PySide6.QtCore import QTimer
+                def use_best_path():
+                    if discovery_id in self.pending_path_discoveries:
+                        info = self.pending_path_discoveries[discovery_id]
+                        if info["best_path"]:
+                            print(f"Path discovery timeout - using best path found: {info['best_path']} (delay: {info['best_delay']}ms)")
+                            if not info.get("callback_called", False):
+                                info["callback"](info["best_path"], info["best_delay"])
+                        else:
+                            print(f"Path discovery timeout - no path found to service {service_id}")
+                        del self.pending_path_discoveries[discovery_id]
+                
+                timer = QTimer()
+                timer.setSingleShot(True)
+                timer.timeout.connect(use_best_path)
+                timer.start(10000)  # 10 second timeout (increased to allow time for responses to traverse network)
+                self.pending_path_discoveries[discovery_id]["timeout"] = timer
+                
+                # Initiate path discovery
+                if not initiate_path_discovery(self, service_id):
+                    print("Failed to initiate path discovery")
+                    # Clean up
+                    if discovery_id in self.pending_path_discoveries:
+                        del self.pending_path_discoveries[discovery_id]
     
     def send_service_discovery(self, service_type):
         """
@@ -276,6 +523,10 @@ class Node:
         Handle receiving a service discovery packet.
         Store the service info and forward to other connected nodes.
         """
+        # Check if node is enabled
+        if not self.enabled:
+            return
+        
         if not hasattr(self, 'discovered_services'):
             self.discovered_services = []
         
@@ -351,24 +602,34 @@ class Node:
                         # Forward the packet
                         self.send_packet(other_node.id, "SERVICE", service_data)
     
-    def request_service_connection(self, service_data):
+    def request_service_connection(self, service_data, retry_data=None):
         """
         Request a connection to a service by following the path from services.json.
         Sends a CONNECTION_REQUEST packet along the path.
         The path in services.json goes FROM service TO this node, so we need to reverse it.
+        
+        Args:
+            service_data: Service data from discovered_services
+            retry_data: Optional retry data from a previous failed attempt
         """
         if not self.canvas_ref:
             return False
         
-        # Path in services.json is from service to this node, reverse it for request
-        original_path = service_data.get("path", [])
-        if len(original_path) == 0:
-            return False
+        # If retry_data is provided, use it (for retries)
+        if retry_data:
+            path = retry_data.get("path", [])
+            service_id = retry_data.get("service_id")
+        else:
+            # Path in services.json is from service to this node, reverse it for request
+            original_path = service_data.get("path", [])
+            if len(original_path) == 0:
+                return False
+            
+            # Reverse the path to go from this node to the service
+            path = list(reversed(original_path))
+            service_id = service_data.get("service_id")
         
-        # Reverse the path to go from this node to the service
-        path = list(reversed(original_path))
-        
-        # Verify we're at the start of the reversed path
+        # Verify we're at the start of the path
         if path[0] != self.id:
             # We're not at the start, find our position
             try:
@@ -386,12 +647,13 @@ class Node:
         
         next_node_id = path[1]
         
-        # Create connection request packet with the reversed path
+        # Create connection request packet with the path
         request_data = {
-            "service_id": service_data.get("service_id"),
+            "service_id": service_id,
             "requesting_node_id": self.id,
             "path": path,  # Path from requesting node to service
-            "request_type": "CONNECTION_REQUEST"
+            "request_type": "CONNECTION_REQUEST",
+            "retry_count": retry_data.get("retry_count", 0) if retry_data else 0
         }
         
         # Send request packet to next node in path
@@ -406,6 +668,12 @@ class Node:
         If we're the service, respond with CONNECTION_RESPONSE.
         Otherwise, forward along the path.
         """
+        # Check if node is enabled
+        if not self.enabled:
+            # Send failure packet back
+            self._send_connection_failure(request_data, self.id)
+            return False
+        
         service_id = request_data.get("service_id")
         path = request_data.get("path", [])
         requesting_node_id = request_data.get("requesting_node_id")
@@ -434,9 +702,194 @@ class Node:
                 our_index = path.index(self.id)
                 if our_index + 1 < len(path):
                     next_node_id = path[our_index + 1]
-                    return self.send_packet(next_node_id, "CONNECTION_REQUEST", request_data)
+                    result = self.send_packet(next_node_id, "CONNECTION_REQUEST", request_data)
+                    if not result:
+                        # Forwarding failed - the failure is at the next node (we can't reach it)
+                        # Send failure packet back to requesting node
+                        self._send_connection_failure(request_data, next_node_id)
+                    return result
             except ValueError:
                 pass
+            # Can't forward - we're the failure point
+            self._send_connection_failure(request_data, self.id)
+            return False
+    
+    def handle_path_discovery(self, discovery_data, sender_node, connection_delay):
+        """
+        Handle a PATH_DISCOVERY packet.
+        If we're the target service, send PATH_RESPONSE back.
+        Otherwise, forward to all neighbors (avoiding loops).
+        """
+        # Check if node is enabled
+        if not self.enabled:
+            return False
+        
+        discovery_id = discovery_data.get("discovery_id")
+        target_service_id = discovery_data.get("target_service_id")
+        requesting_node_id = discovery_data.get("requesting_node_id")
+        path_so_far = discovery_data.get("path", [])
+        total_delay = discovery_data.get("total_delay", 0)
+        
+        # Check if we've seen this discovery ID before (prevent loops)
+        if discovery_id in self.seen_discovery_ids:
+            return False  # Already processed this discovery
+        
+        # Add ourselves to seen discoveries
+        self.seen_discovery_ids.add(discovery_id)
+        
+        # Clean up old discovery IDs periodically (keep set from growing too large)
+        if len(self.seen_discovery_ids) > 1000:
+            # Keep only recent ones (simple cleanup)
+            self.seen_discovery_ids = set(list(self.seen_discovery_ids)[-500:])
+        
+        # Check if we're the target service
+        if self.id == target_service_id:
+            # We're the target! Send response back along the path
+            complete_path = path_so_far + [self.id]
+            print(f"Path discovery SUCCESS: Found path from {requesting_node_id} to {target_service_id}: {complete_path} (delay: {total_delay}ms)")
+            response_data = {
+                "target_service_id": target_service_id,
+                "requesting_node_id": requesting_node_id,
+                "path": complete_path,  # Complete path
+                "total_delay": total_delay,
+                "discovery_id": discovery_id
+            }
+            
+            # Send response back to previous node in path
+            if len(path_so_far) > 0:
+                prev_node_id = path_so_far[-1]
+                return self.send_packet(prev_node_id, "PATH_RESPONSE", response_data)
+            return False
+        else:
+            # Forward to all neighbors (except the one we came from)
+            sent_count = 0
+            new_path = path_so_far + [self.id]
+            
+            for conn in self.canvas_ref.connections:
+                # Allow path discovery through HANDSHAKING, ESTABLISHED, and ACTIVE connections
+                # This allows discovery to find paths even through connections that aren't fully established
+                if conn.state not in [conn.HANDSHAKING, conn.ESTABLISHED, conn.ACTIVE]:
+                    continue
+                
+                # Check if both nodes are enabled
+                node_a_enabled = getattr(conn.node_a, 'enabled', True)
+                node_b_enabled = getattr(conn.node_b, 'enabled', True)
+                if not node_a_enabled or not node_b_enabled:
+                    continue
+                
+                # Find the neighbor node
+                neighbor_node = None
+                if conn.node_a == self:
+                    neighbor_node = conn.node_b
+                elif conn.node_b == self:
+                    neighbor_node = conn.node_a
+                
+                # Don't send back to sender or if already in path (avoid loops)
+                if neighbor_node and hasattr(neighbor_node, 'id'):
+                    neighbor_id = neighbor_node.id
+                    sender_id = getattr(sender_node, 'id', None)
+                    if neighbor_id != sender_id and neighbor_id not in new_path:
+                        # Create new discovery data with updated path
+                        new_discovery_data = discovery_data.copy()
+                        new_discovery_data["path"] = new_path
+                        # Use connection delay, or estimate based on distance if delay is 0
+                        conn_delay = conn.delay if conn.delay > 0 else 1
+                        new_discovery_data["total_delay"] = total_delay + conn_delay
+                        
+                        if self.send_packet(neighbor_id, "PATH_DISCOVERY", new_discovery_data):
+                            sent_count += 1
+            
+            return sent_count > 0
+    
+    def handle_path_response(self, response_data, sender_node):
+        """
+        Handle a PATH_RESPONSE packet.
+        If we're the requesting node, store the best path and call callback when timeout.
+        Otherwise, forward back along the path.
+        """
+        # Check if node is enabled
+        if not self.enabled:
+            return False
+        
+        requesting_node_id = response_data.get("requesting_node_id")
+        discovery_id = response_data.get("discovery_id")
+        path = response_data.get("path", [])
+        total_delay = response_data.get("total_delay", float('inf'))
+        
+        # Check if we're the requesting node
+        if self.id == requesting_node_id:
+            # We're the requester! Store the best path found so far
+            if discovery_id in self.pending_path_discoveries:
+                info = self.pending_path_discoveries[discovery_id]
+                # Check if this is a better path
+                was_first_path = (info["best_delay"] == float('inf'))
+                is_better_path = (total_delay < info["best_delay"])
+                
+                if is_better_path:
+                    # Update best path
+                    info["best_path"] = path
+                    info["best_delay"] = total_delay
+                    print(f"Received path response: {path} (delay: {total_delay}ms)")
+                    
+                    # If this is the first path found OR a better path, use it immediately
+                    if not info.get("callback_called", False):
+                        # Cancel the original timeout
+                        if info.get("timeout"):
+                            info["timeout"].stop()
+                        
+                        # Call the callback immediately with this path
+                        if was_first_path:
+                            print(f"Using first path found immediately: {path}")
+                        else:
+                            print(f"Using better path found: {path}")
+                        info["callback"](path, total_delay)
+                        info["callback_called"] = True
+                        
+                        # Don't delete yet - keep it in case we get a better path
+                        # But set a shorter timeout for additional paths (3 seconds)
+                        from PySide6.QtCore import QTimer
+                        def use_best_path_final():
+                            if discovery_id in self.pending_path_discoveries:
+                                del self.pending_path_discoveries[discovery_id]
+                        
+                        timer = QTimer()
+                        timer.setSingleShot(True)
+                        timer.timeout.connect(use_best_path_final)
+                        timer.start(3000)  # 3 second timeout for additional better paths
+                        info["timeout"] = timer
+            else:
+                # Discovery entry was cleaned up (timeout fired), but we still got a response
+                # This can happen if the response arrives just after timeout
+                # Try to find the service and use the path anyway
+                print(f"Path response arrived after timeout, but using path anyway: {path}")
+                # Extract service_id from discovery_id (format: requesting_node_id_service_id_counter)
+                parts = discovery_id.split('_')
+                if len(parts) >= 2:
+                    service_id = '_'.join(parts[1:-1])  # Everything between first and last part
+                    # Try to use the path by creating a connection request
+                    new_request_data = {
+                        "service_id": service_id,
+                        "requesting_node_id": self.id,
+                        "path": path,
+                        "request_type": "CONNECTION_REQUEST",
+                        "retry_count": 0
+                    }
+                    next_node_id = path[1] if len(path) > 1 else None
+                    if next_node_id:
+                        result = self.send_packet(next_node_id, "CONNECTION_REQUEST", new_request_data)
+                        if result:
+                            print(f"Successfully sent connection request on late-arriving path")
+            return True
+        else:
+            # Forward back along the path
+            if len(path) > 1:
+                try:
+                    our_index = path.index(self.id)
+                    if our_index > 0:
+                        prev_node_id = path[our_index - 1]
+                        return self.send_packet(prev_node_id, "PATH_RESPONSE", response_data)
+                except ValueError:
+                    pass
             return False
     
     def handle_connection_response(self, response_data, sender_node):
@@ -446,6 +899,9 @@ class Node:
         Otherwise, forward back along the path.
         Path in response goes from service to requesting node.
         """
+        # Check if node is enabled
+        if not self.enabled:
+            return False
         requesting_node_id = response_data.get("requesting_node_id")
         path = response_data.get("path", [])
         
@@ -490,6 +946,10 @@ class Node:
         Send a connection signal that expands in a circle.
         signal_range_pixels: The radius in pixels (scaled from 30 meters)
         """
+        # Check if node is enabled
+        if not self.enabled:
+            return
+        
         if not self.canvas_ref:
             return
         
@@ -557,6 +1017,10 @@ class Node:
         Receive a signal from another node and perform handshake.
         This is called when a signal is detected within range.
         """
+        # Check if node is enabled
+        if not self.enabled:
+            return
+        
         if not self.listening:
             return
         
@@ -588,6 +1052,12 @@ class Node:
                 QTimer.singleShot(500, broadcast_own_signal)
 
 # A Normal Node representing a typical router type device in a home or business
+    def toggle_enabled(self):
+        """Toggle the enabled state of the node"""
+        self.enabled = not self.enabled
+        self._save_to_json()  # Save the state
+        return self.enabled
+
 class NormalNode(Node):
     def __init__(self, x, y, id=None, url=None):
         super().__init__(x, y, id, url)

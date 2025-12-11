@@ -236,6 +236,29 @@ class NodeSidebar(QWidget):
         self.send_signal_button.setEnabled(False)
         layout.addWidget(self.send_signal_button)
         
+        # Disable/Enable button
+        self.toggle_enabled_button = QPushButton("Disable Node")
+        self.toggle_enabled_button.setStyleSheet("""
+            QPushButton {
+                background-color: #F44336;
+                color: white;
+                border: none;
+                padding: 12px;
+                font-size: 14px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #D32F2F;
+            }
+            QPushButton:pressed {
+                background-color: #B71C1C;
+            }
+        """)
+        self.toggle_enabled_button.clicked.connect(self._on_toggle_enabled)
+        self.toggle_enabled_button.setEnabled(False)
+        layout.addWidget(self.toggle_enabled_button)
+        
         # Close button
         self.close_button = QPushButton("Close")
         self.close_button.setStyleSheet("""
@@ -308,6 +331,47 @@ class NodeSidebar(QWidget):
                 self._populate_service_selector(node)
             
             self.send_signal_button.setEnabled(True)
+            self.toggle_enabled_button.setEnabled(True)
+            # Update button text based on node state
+            if hasattr(node, 'enabled'):
+                if node.enabled:
+                    self.toggle_enabled_button.setText("Disable Node")
+                    self.toggle_enabled_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #F44336;
+                            color: white;
+                            border: none;
+                            padding: 12px;
+                            font-size: 14px;
+                            border-radius: 5px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background-color: #D32F2F;
+                        }
+                        QPushButton:pressed {
+                            background-color: #B71C1C;
+                        }
+                    """)
+                else:
+                    self.toggle_enabled_button.setText("Enable Node")
+                    self.toggle_enabled_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #4CAF50;
+                            color: white;
+                            border: none;
+                            padding: 12px;
+                            font-size: 14px;
+                            border-radius: 5px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background-color: #45a049;
+                        }
+                        QPushButton:pressed {
+                            background-color: #2E7D32;
+                        }
+                    """)
             self.show()
         else:
             self.hide()
@@ -401,6 +465,53 @@ class NodeSidebar(QWidget):
                 service_data = self.service_selector_combo.itemData(current_index)
                 if service_data:
                     self.selected_node.request_service_connection(service_data)
+    
+    def _on_toggle_enabled(self):
+        """Handle toggle enabled/disabled button click"""
+        if self.selected_node and hasattr(self.selected_node, 'toggle_enabled'):
+            is_enabled = self.selected_node.toggle_enabled()
+            # Update button text and style
+            if is_enabled:
+                self.toggle_enabled_button.setText("Disable Node")
+                self.toggle_enabled_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #F44336;
+                        color: white;
+                        border: none;
+                        padding: 12px;
+                        font-size: 14px;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #D32F2F;
+                    }
+                    QPushButton:pressed {
+                        background-color: #B71C1C;
+                    }
+                """)
+            else:
+                self.toggle_enabled_button.setText("Enable Node")
+                self.toggle_enabled_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        padding: 12px;
+                        font-size: 14px;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                    QPushButton:pressed {
+                        background-color: #2E7D32;
+                    }
+                """)
+            # Update canvas to reflect changes
+            if self.canvas_ref:
+                self.canvas_ref.update()
     
     def _on_close(self):
         """Close the sidebar and deselect node"""

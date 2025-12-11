@@ -26,8 +26,15 @@ class SimulationCanvas(QWidget):
         self.cancel_position_button = None
         self.selected_node = None  # Currently selected node
         self.sidebar = None  # Reference to sidebar widget
+        self.left_sidebar = None  # Reference to left sidebar widget
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+        
+        # Pan functionality
+        self.panning = False
+        self.pan_start = QPoint(0, 0)
+        self.pan_offset = QPoint(0, 0)
+        self.view_offset = QPoint(0, 0)  # Current view offset for panning
 
         # Scale factor: 30 meters = 150 pixels (adjustable)
         # Assuming 1 meter = 5 pixels as default
@@ -209,9 +216,12 @@ class SimulationCanvas(QWidget):
         node_a._save_to_json()
         node_b._save_to_json()
         
-        # Refresh sidebar if selected node is involved
-        if self.sidebar and self.selected_node and (self.selected_node == node_a or self.selected_node == node_b):
-            self.sidebar.set_selected_node(self.selected_node, self)
+        # Refresh sidebars if selected node is involved
+        if self.selected_node and (self.selected_node == node_a or self.selected_node == node_b):
+            if self.sidebar:
+                self.sidebar.set_selected_node(self.selected_node, self)
+            if self.left_sidebar:
+                self.left_sidebar.set_selected_node(self.selected_node, self)
         
         self.update()
         return connection
@@ -379,7 +389,12 @@ class SimulationCanvas(QWidget):
     
     def mousePressEvent(self, event):
         # Handle mouse press events
-        if self.positioning_mode and self.preview_node:
+        if event.button() == Qt.MiddleButton:
+            # Middle mouse button for panning
+            self.panning = True
+            self.pan_start = event.position().toPoint()
+            self.pan_offset = self.view_offset
+        elif self.positioning_mode and self.preview_node:
             # Check if click is on the preview node
             distance = math.sqrt(
                 (event.position().x() - self.preview_node.x)**2 + 
@@ -392,19 +407,25 @@ class SimulationCanvas(QWidget):
                     int(event.position().y() - self.preview_node.y)
                 )
         elif event.button() == Qt.LeftButton:
-            # Left-click to select node
-            clicked_node = self._get_node_at_position(event.position().x(), event.position().y())
+            # Left-click to select node (account for pan offset)
+            adjusted_x = event.position().x() - self.view_offset.x()
+            adjusted_y = event.position().y() - self.view_offset.y()
+            clicked_node = self._get_node_at_position(adjusted_x, adjusted_y)
             
             # If clicking on empty space, deselect
             if not clicked_node:
                 self.selected_node = None
                 if self.sidebar:
                     self.sidebar.set_selected_node(None, self)
+                if self.left_sidebar:
+                    self.left_sidebar.set_selected_node(None, self)
             else:
                 self.selected_node = clicked_node
-                # Update sidebar if it exists
+                # Update sidebars if they exist
                 if self.sidebar:
                     self.sidebar.set_selected_node(clicked_node, self)
+                if self.left_sidebar:
+                    self.left_sidebar.set_selected_node(clicked_node, self)
             
             self.update()
         super().mousePressEvent(event)
@@ -419,8 +440,14 @@ class SimulationCanvas(QWidget):
     
     
     def mouseMoveEvent(self, event):
-        # Handle mouse move events for dragging
-        if self.positioning_mode and self.dragging and self.preview_node:
+        # Handle mouse move events for dragging and panning
+        if self.panning:
+            # Pan the canvas
+            current_pos = event.position().toPoint()
+            delta = current_pos - self.pan_start
+            self.view_offset = self.pan_offset + delta
+            self.update()
+        elif self.positioning_mode and self.dragging and self.preview_node:
             new_x = int(event.position().x() - self.drag_offset.x())
             new_y = int(event.position().y() - self.drag_offset.y())
             
@@ -436,6 +463,8 @@ class SimulationCanvas(QWidget):
     
     def mouseReleaseEvent(self, event):
         # Handle mouse release events
+        if event.button() == Qt.MiddleButton:
+            self.panning = False
         if self.dragging:
             self.dragging = False
         super().mouseReleaseEvent(event)
@@ -450,6 +479,9 @@ class SimulationCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor(240, 240, 240))
+
+        # Apply pan offset transform
+        painter.translate(self.view_offset.x(), self.view_offset.y())
 
         # Draw connections first (so they appear behind nodes)
         for connection in self.connections:
