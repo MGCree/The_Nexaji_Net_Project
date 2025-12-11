@@ -4,7 +4,7 @@ import heapq
 
 def build_graph_from_canvas(canvas):
     # Graph construction algorithm - Builds weighted graph from canvas connections for pathfinding
-    # Time Complexity: O(E), Space Complexity: O(V + E)
+    # Time Complexity: O(E) - Linear, Space Complexity: O(V + E) - Linear
     # V = number of vertices (nodes), E = number of edges (connections)
     graph = {}
     
@@ -41,7 +41,7 @@ def build_graph_from_canvas(canvas):
 
 def dijkstra_shortest_path(graph, start_id, destination_id):
     # Dijkstra's algorithm - Finds shortest path between nodes considering connection delays (weights)
-    # Time Complexity: O((V + E) log V), Space Complexity: O(V)
+    # Time Complexity: O((V + E) log V) - Linearithmic, Space Complexity: O(V) - Linear
     # V = number of vertices (nodes), E = number of edges (connections)
     if start_id not in graph or destination_id not in graph:
         return None, None
@@ -90,7 +90,7 @@ def dijkstra_shortest_path(graph, start_id, destination_id):
 
 def bfs_shortest_path(graph, start_id, destination_id):
     # BFS (Breadth-First Search) - Finds path with minimum number of hops between nodes
-    # Time Complexity: O(V + E), Space Complexity: O(V)
+    # Time Complexity: O(V + E) - Linear, Space Complexity: O(V) - Linear
     # V = number of vertices (nodes), E = number of edges (connections)
     if start_id not in graph or destination_id not in graph:
         return None, None
@@ -121,7 +121,7 @@ def bfs_shortest_path(graph, start_id, destination_id):
 
 def find_path(canvas, start_id, destination_id, algorithm='dijkstra'):
     # Pathfinding wrapper - Selects and runs the specified pathfinding algorithm (dijkstra or bfs)
-    # Time Complexity: O((V + E) log V) for dijkstra, O(V + E) for bfs
+    # Time Complexity: O((V + E) log V) - Linearithmic for dijkstra, O(V + E) - Linear for bfs
     # V = number of vertices (nodes), E = number of edges (connections)
     graph = build_graph_from_canvas(canvas)
     
